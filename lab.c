@@ -1,111 +1,44 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <mosquitto.h>
+#include "stdio.h"
+#include "stdlib.h"
+#include "string.h"
+#include "MQTTClient.h"
 
-#define ADDRESS     "tcp://broker.hivemq.com:1883"
-#define CLIENTID_PUB    "Publisher"
-#define CLIENTID_SUB    "Subscriber"
-#define TOPIC       "mytopic"
+#define ADDRESS     "tcp://localhost:1883"
+#define CLIENTID    "ExampleClientPub"
+#define TOPIC       "MQTT Examples"
+#define PAYLOAD     "Hello World!"
 #define QOS         1
 #define TIMEOUT     10000L
 
-volatile int delivered = 0;
-
-void message_callback(struct mosquitto *mosq, void *userdata, const struct mosquitto_message *message)
-{
-    time_t now;
-    char payload[100];
-
-    now = time(NULL);
-    strftime(payload, sizeof(payload), "%Y-%m-%d %H:%M:%S", localtime(&now));
-    printf("Message arrived at %s: %s\n", payload, (char*)message->payload);
-}
-
-void connect_callback(struct mosquitto *mosq, void *userdata, int result)
-{
-    if (result == 0) {
-        printf("Publisher connected to broker successfully.\n");
-    } else {
-        fprintf(stderr, "Publisher connection failed.\n");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void publish_callback(struct mosquitto *mosq, void *userdata, int mid)
-{
-    printf("Message with ID %d delivered.\n", mid);
-    delivered = 1;
-}
-
 int main(int argc, char* argv[])
 {
-    struct mosquitto *mosq_pub, *mosq_sub;
-    int rc_pub, rc_sub;
+    MQTTClient client;
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    MQTTClient_message pubmsg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken token;
+    int rc;
 
-    mosquitto_lib_init();
+    MQTTClient_create(&client, ADDRESS, CLIENTID,
+        MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    conn_opts.keepAliveInterval = 20;
+    conn_opts.cleansession = 1;
 
-    mosq_pub = mosquitto_new(CLIENTID_PUB, true, NULL);
-    mosq_sub = mosquitto_new(CLIENTID_SUB, true, NULL);
-
-    if (!mosq_pub || !mosq_sub) {
-        fprintf(stderr, "Error: Out of memory.\n");
-        return EXIT_FAILURE;
-    }
-
-    mosquitto_connect_callback_set(mosq_pub, connect_callback);
-    mosquitto_connect_callback_set(mosq_sub, connect_callback);
-    mosquitto_message_callback_set(mosq_sub, message_callback);
-    mosquitto_publish_callback_set(mosq_pub, publish_callback);
-
-    rc_pub = mosquitto_connect(mosq_pub, ADDRESS, 1883, 20);
-    rc_sub = mosquitto_connect(mosq_sub, ADDRESS, 1883, 20);
-
-    if (rc_pub == MOSQ_ERR_SUCCESS && rc_sub == MOSQ_ERR_SUCCESS)
+    if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
     {
-        mosquitto_subscribe(mosq_sub, NULL, TOPIC, QOS);
-        
-        char input[100];
-        while (1) {
-            printf("Enter a message to publish (or 'q' to quit): ");
-            fgets(input, sizeof(input), stdin);
-
-            if (input[0] == 'q') {
-                break;
-            }
-
-            delivered = 0;
-            rc_pub = mosquitto_publish(mosq_pub, NULL, TOPIC, strlen(input), input, QOS, false);
-
-            if (rc_pub != MOSQ_ERR_SUCCESS) {
-                fprintf(stderr, "Error publishing message: %s\n", mosquitto_strerror(rc_pub));
-                exit(EXIT_FAILURE);
-            }
-
-            while (!delivered) {
-                rc_pub = mosquitto_loop(mosq_pub, 100, 1);
-                if (rc_pub != MOSQ_ERR_SUCCESS) {
-                    fprintf(stderr, "Error in the publisher loop: %s\n", mosquitto_strerror(rc_pub));
-                    exit(EXIT_FAILURE);
-                }
-            }
-
-        }
-
-        mosquitto_unsubscribe(mosq_sub, NULL, TOPIC);
+        printf("Failed to connect, return code %d\n", rc);
+        exit(-1);
     }
-    else
-    {
-        fprintf(stderr, "Failed to connect to broker: %s\n", mosquitto_strerror(rc_pub));
-        exit(EXIT_FAILURE);
-    }
-
-    mosquitto_disconnect(mosq_pub);
-    mosquitto_destroy(mosq_pub);
-    mosquitto_disconnect(mosq_sub);
-    mosquitto_destroy(mosq_sub);
-    mosquitto_lib_cleanup();
-
-    return EXIT_SUCCESS;
+    pubmsg.payload = PAYLOAD;
+    pubmsg.payloadlen = strlen(PAYLOAD);
+    pubmsg.qos = QOS;
+    pubmsg.retained = 0;
+    MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token);
+    printf("Waiting for up to %d seconds for publication of %s\n"
+        "on topic %s for client with ClientID: %s\n",
+        (int)(TIMEOUT / 1000), PAYLOAD, TOPIC, CLIENTID);
+    rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
+    printf("Message with delivery token %d delivered\n", token);
+    MQTTClient_disconnect(client, 10000);
+    MQTTClient_destroy(&client);
+    return rc;
 }
